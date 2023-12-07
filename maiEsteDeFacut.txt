@@ -1,0 +1,6 @@
+Operatii:'
+->history
+->reply : cum fac: pt fiecare mesaj generez un ID, acel id vad eu ce fac cu el, dar as vrea sa nu fie prea multe cifre ex /reply 592852958 blablabla...
+/reply {ID} {MSJ}
+
+sau poate ncurses
