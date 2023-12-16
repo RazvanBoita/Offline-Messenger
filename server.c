@@ -8,17 +8,22 @@
 #include <arpa/inet.h>
 #include <string.h>
 #include <stdlib.h>
-#include <termios.h>
+#include <sqlite3.h>
+
 #define PORT 2728
 #define MAX_USERS 1024
 #define MAX_ONLINE_USERS 200
 #define SIGNUP_START_INDEX 8
 #define LOGIN_START_INDEX 7
 #define STATUS_START_INDEX 8
+#define POKE_START_INDEX 6
+#define UNBLOCK_START_INDEX 9
+#define HISTORY_START_INDEX 9
 #define DATABASE "toti_userii.txt"
 extern int errno;
+
 char* mesaj_clean_screen="\033[2J\033[HPentru meniu, scrieti /menu!\n";
-char* mesaj_afisare_meniu="\033[2J\033[HIata meniul nostru!\n\n/meniu --> Pentru afisarea optiunilor disponibile\n/signup {NUME} --> Pentru inregistrare(creare cont)\n/login {NUME} --> Pentru autentificare\n/send {NUME} {MESAJ} --> Pentru a trimite un mesaj\n/reply {MESAJ} -->Pentru a raspunde la mesaj\n/history {NUME} -->Pentru a vedea istoricul conversatiei intre 2 useri\n/whoson --> Pentru a vedea cine este conectat\n/whosoff --> Pentru a vedea cine este offline\n/whoall --> Pentru a vedea toti utilizatorii\n/unread --> Pentru a vedea mesajele primite cat timp ati fost offline\n/status {NUME} --> Pentru a vedea daca utilizatorul cu acel {NUME} este online\n/disconnect --> Deconectati-va de pe chat\n/quit --> Parasiti aplicatia\n/clear --> Curatati ecranul\n\n";
+char* mesaj_afisare_meniu="\033[2J\033[HIata meniul nostru!\n\n/menu --> Pentru afisarea optiunilor disponibile\n/signup {NUME} --> Pentru inregistrare(creare cont)\n/login {NUME} --> Pentru autentificare\n/send {NUME} {MESAJ} --> Pentru a trimite un mesaj\n/reply {MESAJ} -->Pentru a raspunde la mesaj\n/history {NUME} -->Pentru a vedea istoricul conversatiei intre 2 useri\n/whoson --> Pentru a vedea cine este conectat\n/whosoff --> Pentru a vedea cine este offline\n/whoall --> Pentru a vedea toti utilizatorii\n/unread --> Pentru a vedea mesajele primite cat timp ati fost offline\n/status {NUME} --> Pentru a vedea daca utilizatorul cu acel {NUME} este online\n/poke {NUME} --> Atrage atentia utilizatorului {NUME} ciupindu-l!\n/block {NUME} --> Blocati toate mesajele ale utilizatorului {NUME}\n/unblock {NUME} --> Deblocati user-ul cu numele {NUME}\n/disconnect --> Deconectati-va de pe chat\n/quit --> Parasiti aplicatia\n/clear --> Curatati ecranul\n\n";
 char* mesaj_unkown="Actiune invalida! Pentru mai multe detalii, consultati meniul(/menu)!\n";
 char* mesaj_goodbye="La revedere!\n";
 char* mesaj_alreadyLogged="Nu putem face acest lucru, deoarece sunteti deja logat!\n";
@@ -27,6 +32,8 @@ char* mesaj_userExists="Acest user deja exista! Incearca alt nume, sau alege sa 
 char* mesaj_noPrivilege="Trebuie sa fii logat pentru a putea efectua aceasta operatie!\n";
 char* mesaj_disconnectedFailure="Inca nu sunteti conectat, deci nu va putem deconecta...*_*\n";
 char* mesaj_invalid_username="Username-ul dvs nu poate contine spatii sau caractere speciale! Incercati din nou!\n";
+char* mesaj_no_user="Acest user nu exista!\n";
+
 struct User {
     int socket;
     char name[50];
@@ -34,7 +41,7 @@ struct User {
 struct User online_users [MAX_ONLINE_USERS]={0,"\0"};
 int online_counter=0;
 
-void launchDB() {
+void launchTextDB() {
     FILE *file;
     file = fopen("toti_userii.txt", "a+");
     if (file == NULL) {
@@ -317,9 +324,162 @@ char * conv_addr (struct sockaddr_in address){
 }
 
 
-int main () {
+int callbackCount(void *data, int argc, char **argv, char **azColName) {
+    int *result = (int *)data;
+    *result = atoi(argv[0]);
+    return 0;
+}
 
-    launchDB();
+int existaBlocare(sqlite3 *db, const char *Nume1, const char *Nume2) {
+    char *errMsg = 0;
+    int code;
+    char sql_check[100];
+    sprintf(sql_check, "SELECT COUNT(*) FROM Blocked WHERE Nume1 = '%s' AND Nume2 = '%s';", Nume1, Nume2);
+    int result = 0;
+    code = sqlite3_exec(db, sql_check, callbackCount, &result, &errMsg);
+    if (code != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", errMsg);
+        sqlite3_free(errMsg);
+        return 0;
+    }
+    return result>0;
+}
+
+int inserareBlocare(sqlite3 *db, char *name1, char *name2) {
+    //0 pt eroare, 1 pt succes, 2 pt exista deja
+    char *errMsg = 0;
+    int code;
+    char sql_insert[100];
+    if(existaBlocare(db,name1,name2)){
+        printf("Aceasta pereche exista deja!\n");
+        return 2;
+    }
+    sprintf(sql_insert, "INSERT INTO Blocked (Nume1, Nume2) VALUES ('%s', '%s');", name1, name2);
+    code = sqlite3_exec(db, sql_insert, 0, 0, &errMsg);
+    if (code != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", errMsg);
+        sqlite3_free(errMsg);
+        return 0;
+    }
+    printf("Succes la introducere date in bd!\n");
+    return 1;
+}
+
+int stergereBlocare(sqlite3 *db, char *name1, const char *name2) {
+    //0 pt eroare, 1 pt succes, 2 pt nu exista
+    char *errMsg = 0;
+    int code;
+    char sql_delete[100];
+    if(existaBlocare(db,name1,name2)==0){
+        printf("Nu putem sterge aceasta pereche, ea nu exista!\n");
+        return 2;
+    }
+    sprintf(sql_delete, "DELETE FROM Blocked WHERE Nume1 = '%s' AND Nume2 = '%s';", name1, name2);
+    code = sqlite3_exec(db, sql_delete, 0, 0, &errMsg);
+    if (code != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", errMsg);
+        sqlite3_free(errMsg);
+        return 0;
+    }
+    printf("Am sters cu succes din tabela Blocked!\n");
+    return 1;
+}
+
+void executeSQLCommand(sqlite3* db, char* sql) {
+    char* errMsg = 0;
+    int code = sqlite3_exec(db, sql, 0, 0, &errMsg);
+    if (code != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", errMsg);
+        sqlite3_free(errMsg);
+    }
+}
+
+void insertConversation(sqlite3* db, char* sender, char* receiver, char* message) {
+    char sql[256];
+    snprintf(sql, sizeof(sql), "INSERT INTO Conversatii (SenderName, ReceiverName, MsgContent) VALUES ('%s', '%s', '%s');",
+             sender, receiver, message);
+    
+    char* errMsg=0;
+    int code=sqlite3_exec(db,sql,0,0,&errMsg);
+    if (code != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", errMsg);
+        sqlite3_free(errMsg);
+    }
+}
+
+char* getConversationsBetweenUsers(sqlite3* db, char* user1, char* user2) {
+    char sql[256];
+    snprintf(sql, sizeof(sql), "SELECT * FROM Conversatii WHERE (SenderName = '%s' AND ReceiverName = '%s') OR (SenderName = '%s' AND ReceiverName = '%s') ORDER BY Timestamp;",
+             user1, user2, user2, user1);
+
+    sqlite3_stmt* statement;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &statement, 0);
+
+    if (rc != SQLITE_OK) {
+        printf("SQLite error: %s\n", sqlite3_errmsg(db));
+        exit(rc);
+    }
+    char* result = malloc(1);
+    result[0] = '\0';
+
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        const char* id= sqlite3_column_text(statement, 0);
+        const char* sender = sqlite3_column_text(statement, 1);
+        const char* receiver = sqlite3_column_text(statement, 2);
+        const char* message = sqlite3_column_text(statement, 3);
+
+        char temp[256];
+        snprintf(temp, sizeof(temp), "[ID:%s] %s -> %s: %s\n",id, sender, receiver, message);
+        result = realloc(result, strlen(result) + strlen(temp) + 1);
+        strcat(result, temp);
+    }
+    sqlite3_finalize(statement);
+    return result;
+}
+
+int main () {
+    //TODO initializari pentru stocare informatiilor, BD si fisiere .txt
+    sqlite3* db;
+    char* errMsg=0;
+    int code;
+    code=sqlite3_open("myDB.db",&db);
+    if(code){
+        printf("Nu putem deschide baza de date: %s\n",sqlite3_errmsg(db));
+        exit(EXIT_FAILURE);
+    }
+    else printf("Baza de date a fost deschisa!\n");
+
+    char *sql_create = "CREATE TABLE Blocked (Nume1 TEXT, Nume2 TEXT);";
+    code = sqlite3_exec(db, sql_create, 0, 0, &errMsg);
+    if (code != SQLITE_OK) {
+        fprintf(stderr, "SQL said: %s\n", errMsg);
+        sqlite3_free(errMsg);
+        printf("Nu mai cream tabelul Blocked, acesta exista!\n");
+    } 
+    else printf("Table 'Blocked' created successfully\n");
+    
+    sql_create = "CREATE TABLE Conversatii (ConversationID INTEGER PRIMARY KEY AUTOINCREMENT, SenderName TEXT, ReceiverName TEXT, MsgContent TEXT, Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);";
+    code = sqlite3_exec(db, sql_create, 0, 0, &errMsg);
+    if (code != SQLITE_OK) {
+        fprintf(stderr, "SQL said: %s\n", errMsg);
+        sqlite3_free(errMsg);
+        printf("Nu mai cream tabelul Conversatii, acesta exista!\n");
+    }
+    else printf("Tabelul 'Conversatii' creat cu succes!\n");
+
+
+    //? manual introducere si interogare istoric conversatii
+    // insertConversation(db,"Nume1","Nume2","Mesaj");
+    // char* user1="Razvan";
+    // char* user2="Ionel";
+    // char* conversations=getConversationsBetweenUsers(db,user1,user2);
+    // printf("Conversatii intre %s si %s:\n%s", user1, user2, conversations);
+    // free(conversations);
+    //? manual introducere si interogare istoric conversatii
+
+    launchTextDB();
+
+
     struct sockaddr_in server,client_address;
     fd_set readfds,actfds;	
     struct timeval tv;	
@@ -378,6 +538,7 @@ int main () {
                 }
                 else{
                     char buf[1024]="";
+                    char toBeCreated[1024]="";
                     int biti=read(i,buf,1024);
                     if(biti<1){
                         printf("S a deconectat un client\n");
@@ -457,7 +618,24 @@ int main () {
                             send(i,mesaj_noPrivilege,strlen(mesaj_noPrivilege),0);
                             continue;
                         }
-                        history_flag=1;
+                        else{
+                            char username_to_send[256];
+                            extragereUsername(buf,HISTORY_START_INDEX,username_to_send);
+                            if(strcmp(username_to_send,current_username)==0){
+                                send(i,"Nu poti vedea istoricul tau cu tine...!\n",100,0);
+                                continue;
+                            }
+                            char* conversatie=getConversationsBetweenUsers(db,current_username,username_to_send);
+                            if(conversatie[0]=='\0'){
+                                send(i,"Nu ai vorbit inca cu acest utilizator!\n",100,0);
+                                continue;
+                            }
+                            strcpy(toBeCreated,"");
+                            snprintf(toBeCreated,4098,"Conversatii intre tine si %s:\n%s",username_to_send,conversatie);
+                            send(i,toBeCreated,strlen(toBeCreated),0);
+                            free(conversatie);
+                        }
+                        continue;
                     }
                         
                     else if(strcmp(buf,"/whoson")==0){
@@ -538,16 +716,25 @@ int main () {
                                     if(strcmp(username_to_send,current_username)==0)
                                         send(i,"Nu ti poti trimite mesaje singur...:)\n",100,0);
                                     else{
-                                        int socket_to_send=getSocketByName(username_to_send);
-                                        char full_msg[1024]="";
-                                        snprintf(full_msg,2048,"[%s]: %s\n",username_to_send,msg_to_send);
-                                        send(socket_to_send,full_msg,strlen(full_msg),0);
-                                        send(i,"Am trimis mesajul!\n",200,0);
+                                        if(existaBlocare(db,username_to_send,current_username)){
+                                            strcpy(toBeCreated,"");
+                                            snprintf(toBeCreated,1024,"%s te-a blocat, deci nu ii poti trimite mesaje!\n",username_to_send);
+                                            send(i,toBeCreated,strlen(toBeCreated),0);
+                                        }
+                                        else{
+                                            int socket_to_send=getSocketByName(username_to_send);
+                                            char full_msg[1024]="";
+                                            snprintf(full_msg,2048,"[%s]: %s\n",current_username,msg_to_send);
+                                            send(socket_to_send,full_msg,strlen(full_msg),0);
+                                            send(i,"Am trimis mesajul!\n",200,0);
+                                            insertConversation(db,current_username,username_to_send,msg_to_send);
+                                        }
                                     }
                                 }
                                 else{
                                     send(i,"User-ul nu este online, ii trimitem acest mesaj in unread\n",200,0);
                                     trimit_unread(i,username_to_send,msg_to_send);
+                                    insertConversation(db,current_username,username_to_send,msg_to_send);
                                 }
                             }
                             else send(i,"Nu exista acest user, deci nu ii poti trimite mesaje!\n",200,0);
@@ -575,18 +762,25 @@ int main () {
                             continue;
                         }
                         else{
-                            char current_username[1024];
-                            extragereUsername(buf,STATUS_START_INDEX,current_username);
-                            if(existaDejaUserul(current_username)){
-                                char toBeCreated[256]="";
-                                if(userIsOnlineByName(current_username))
-                                    snprintf(toBeCreated,2048,"%s este online!\n",current_username);
-                                else
-                                    snprintf(toBeCreated,2048,"%s este offline!\n",current_username);
-                                send(i,toBeCreated,strlen(toBeCreated),0);
+                            char username_to_send[256];
+                            extragereUsername(buf,STATUS_START_INDEX,username_to_send);
+                            if(existaDejaUserul(username_to_send)){
+                                strcpy(toBeCreated,"");
+                                if(existaBlocare(db,username_to_send,current_username)){
+                                    strcpy(toBeCreated,"");
+                                    snprintf(toBeCreated,1024,"%s te-a blocat, deci nu ii poti vedea statusul!\n",username_to_send);
+                                    send(i,toBeCreated,strlen(toBeCreated),0);
+                                }
+                                else{
+                                    if(userIsOnlineByName(username_to_send))
+                                        snprintf(toBeCreated,2048,"%s este online!\n",username_to_send);
+                                    else
+                                        snprintf(toBeCreated,2048,"%s este offline!\n",username_to_send);
+                                    send(i,toBeCreated,strlen(toBeCreated),0);
+                                }
                             }
                             else{
-                                send(i,"Acest user nu exista!\n",30,0);
+                                send(i,mesaj_no_user,30,0);
                             }
                             continue;
                         }
@@ -594,6 +788,92 @@ int main () {
                     }
                     else if(strcmp(buf,"/clear")==0){
                         send(i,mesaj_clean_screen,strlen(mesaj_clean_screen),0);
+                        continue;
+                    }
+
+                    else if(wants_operation(buf,"/poke ")){
+                        if(!userIsOnlineBySocket(i)){
+                            send(i,mesaj_noPrivilege,strlen(mesaj_noPrivilege),0);
+                            continue;
+                        }
+                        else{
+                            char username_to_send[256];
+                            extragereUsername(buf,POKE_START_INDEX,username_to_send);
+                            if(existaDejaUserul(username_to_send)){
+                                strcpy(toBeCreated,"");
+                                if(existaBlocare(db,username_to_send,current_username)){
+                                    snprintf(toBeCreated,1024,"%s te-a blocat, deci nu il poti ciupi!\n",username_to_send);
+                                    send(i,toBeCreated,strlen(toBeCreated),0);
+                                }
+                                else{
+                                    if(userIsOnlineByName(username_to_send)){
+                                        snprintf(toBeCreated,1200,"%s te-a ciupit!\n",current_username);
+                                        int j=getSocketByName(username_to_send);
+                                        if(i==j) strcpy(toBeCreated,"Nu te poti ciupi singur!\n");
+                                        send(j,toBeCreated,strlen(toBeCreated),0);
+                                    }
+                                        
+                                    else{
+                                        snprintf(toBeCreated,1200,"%s nu este online, deci nu putem face asta!\n",username_to_send);
+                                        send(i,toBeCreated,strlen(toBeCreated),0);
+                                    }
+                                } 
+                            }
+                            else send(i,mesaj_no_user,strlen(mesaj_no_user),0);
+                        }
+                        continue;
+                    }
+
+                    else if(wants_operation(buf,"/block ")){
+                        if(!userIsOnlineBySocket(i))
+                            send(i,mesaj_noPrivilege,strlen(mesaj_noPrivilege),0);
+                        else{
+                            char newUsername[256];
+                            extragereUsername(buf,LOGIN_START_INDEX,newUsername);
+                            if(existaDejaUserul(newUsername)){
+                                if(existaBlocare(db,current_username,newUsername))
+                                    send(i,"Deja ai blocat acest user!\n",50,0);
+                                else{
+                                    int j=getSocketByName(newUsername);
+                                    if(i==j)
+                                        send(i,"Nu te poti bloca singur!\n",50,0);
+                                    else{
+                                        inserareBlocare(db,current_username,newUsername);
+                                        strcpy(toBeCreated,"");
+                                        snprintf(toBeCreated,2048,"L-ai blocat cu succes pe %s!\n",newUsername);
+                                        send(i,toBeCreated,strlen(toBeCreated),0);
+                                    }
+                                } 
+                            }
+                            else send(i,mesaj_no_user,strlen(mesaj_no_user),0);
+                        }
+                        continue;
+                    }
+                    else if(wants_operation(buf,"/unblock ")){
+                        if(!userIsOnlineBySocket(i))
+                            send(i,mesaj_noPrivilege,strlen(mesaj_noPrivilege),0);
+                        else{
+                            strcpy(toBeCreated,"");
+                            char newUsername[256];
+                            extragereUsername(buf,UNBLOCK_START_INDEX,newUsername);
+                            if(existaDejaUserul(newUsername)){
+                                if(existaBlocare(db,current_username,newUsername)){
+                                    stergereBlocare(db,current_username,newUsername);
+                                    snprintf(toBeCreated,1024,"L-ai deblocat cu succes pe %s!\n",newUsername);
+                                    send(i,toBeCreated,strlen(toBeCreated),0);
+                                }
+                                else{
+                                    int j=getSocketByName(newUsername);
+                                    if(i==j)
+                                        send(i,"Nu te poti debloca singur...\n",50,0);
+                                    else{    
+                                        snprintf(toBeCreated,1024,"Nu l-ai blocat pe %s, deci nu il poti debloca!\n",newUsername);
+                                        send(i,toBeCreated,strlen(toBeCreated),0);
+                                    }
+                                }
+                            }
+                            else send(i,mesaj_no_user,strlen(mesaj_no_user),0);
+                        }
                         continue;
                     }
                         
