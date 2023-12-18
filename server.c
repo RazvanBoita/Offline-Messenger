@@ -19,11 +19,12 @@
 #define POKE_START_INDEX 6
 #define UNBLOCK_START_INDEX 9
 #define HISTORY_START_INDEX 9
+#define REPLY_START_INDEX 7
 #define DATABASE "toti_userii.txt"
 extern int errno;
 
 char* mesaj_clean_screen="\033[2J\033[HPentru meniu, scrieti /menu!\n";
-char* mesaj_afisare_meniu="\033[2J\033[HIata meniul nostru!\n\n/menu --> Pentru afisarea optiunilor disponibile\n/signup {NUME} --> Pentru inregistrare(creare cont)\n/login {NUME} --> Pentru autentificare\n/send {NUME} {MESAJ} --> Pentru a trimite un mesaj\n/reply {MESAJ} -->Pentru a raspunde la mesaj\n/history {NUME} -->Pentru a vedea istoricul conversatiei intre 2 useri\n/whoson --> Pentru a vedea cine este conectat\n/whosoff --> Pentru a vedea cine este offline\n/whoall --> Pentru a vedea toti utilizatorii\n/unread --> Pentru a vedea mesajele primite cat timp ati fost offline\n/status {NUME} --> Pentru a vedea daca utilizatorul cu acel {NUME} este online\n/poke {NUME} --> Atrage atentia utilizatorului {NUME} ciupindu-l!\n/block {NUME} --> Blocati toate mesajele ale utilizatorului {NUME}\n/unblock {NUME} --> Deblocati user-ul cu numele {NUME}\n/disconnect --> Deconectati-va de pe chat\n/quit --> Parasiti aplicatia\n/clear --> Curatati ecranul\n\n";
+char* mesaj_afisare_meniu="\033[2J\033[HIata meniul nostru!\n\n/menu --> Pentru afisarea optiunilor disponibile\n/signup {NUME} --> Pentru inregistrare(creare cont)\n/login {NUME} --> Pentru autentificare\n/send {NUME} {MESAJ} --> Pentru a trimite un mesaj\n/reply {CONV_ID} -->Pentru a raspunde la mesaj\n/history {NUME} -->Pentru a vedea istoricul conversatiei intre 2 useri\n/whoson --> Pentru a vedea cine este conectat\n/whosoff --> Pentru a vedea cine este offline\n/whoall --> Pentru a vedea toti utilizatorii\n/unread --> Pentru a vedea mesajele primite cat timp ati fost offline\n/status {NUME} --> Pentru a vedea daca utilizatorul cu acel {NUME} este online\n/poke {NUME} --> Atrage atentia utilizatorului {NUME} ciupindu-l!\n/block {NUME} --> Blocati toate mesajele ale utilizatorului {NUME}\n/unblock {NUME} --> Deblocati user-ul cu numele {NUME}\n/disconnect --> Deconectati-va de pe chat\n/quit --> Parasiti aplicatia\n/clear --> Curatati ecranul\n\n";
 char* mesaj_unkown="Actiune invalida! Pentru mai multe detalii, consultati meniul(/menu)!\n";
 char* mesaj_goodbye="La revedere!\n";
 char* mesaj_alreadyLogged="Nu putem face acest lucru, deoarece sunteti deja logat!\n";
@@ -40,6 +41,15 @@ struct User {
 };
 struct User online_users [MAX_ONLINE_USERS]={0,"\0"};
 int online_counter=0;
+
+int isInteger(char *str){
+    while(*str!='\0'){
+        if(*str<'0'||*str>'9')
+            return 0;
+        str++;
+    }
+    return 1;
+}
 
 void launchTextDB() {
     FILE *file;
@@ -117,12 +127,37 @@ int wants_send(char *input) {
         return 0;
     return 1;
 }
+int wants_reply(char *input) {
+    if (strncmp(input, "/reply", 6) != 0)
+        return 0;
+    char *space1 = strchr(input + 6, ' ');
+    if (space1 == NULL)
+        return 0;
+    char *space2 = strchr(space1 + 1, ' ');
+    if (space2 == NULL)
+        return 0;
+    int nameLength = space2 - (space1 + 1);
+    int msgLength = strlen(space2 + 1);
+    if (nameLength == 0 || msgLength == 0)
+        return 0;
+    return 1;
+}
 
 //? e ok
 void retrieve_data_fromSend(char buf[], char username[], char msg[]){
     int counter_username=0,counter_msg=0,i;
     for(i=6;i<strlen(buf)&&buf[i]!=' ';i++)
         username[counter_username++]=buf[i];
+    int j;
+    for (j=i+1;j<strlen(buf)&&buf[i]!='\n'&&buf[i]!='\0';j++)
+        msg[counter_msg++]=buf[j];
+    msg[strlen(msg)]='\0';
+}
+
+void retrieve_data_fromReply(char buf[], char id[], char msg[]){
+    int counter_id=0,counter_msg=0,i;
+    for(i=7;i<strlen(buf)&&buf[i]!=' ';i++)
+        id[counter_id++]=buf[i];
     int j;
     for (j=i+1;j<strlen(buf)&&buf[i]!='\n'&&buf[i]!='\0';j++)
         msg[counter_msg++]=buf[j];
@@ -437,7 +472,98 @@ char* getConversationsBetweenUsers(sqlite3* db, char* user1, char* user2) {
     return result;
 }
 
+int getConversationID(sqlite3* db, char* sender, char* receiver, char* message) {
+    char sql[256];
+    snprintf(sql, sizeof(sql), "SELECT ConversationID FROM Conversatii WHERE SenderName = '%s' AND ReceiverName = '%s' AND MsgContent = '%s' ORDER BY Timestamp DESC LIMIT 1;",
+             sender, receiver, message);
+    sqlite3_stmt* statement;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &statement, 0);
+    int conversationID = -1;
+    if (sqlite3_step(statement) == SQLITE_ROW)
+        conversationID = sqlite3_column_int(statement, 0);
+    sqlite3_finalize(statement);
+    return conversationID;
+}
+const char* getMessageByID(sqlite3* db, int conversationID) {
+    const char* message = NULL;
+    const char* sql = "SELECT MsgContent FROM Conversatii WHERE ConversationID = ?;";
+    sqlite3_stmt* statement;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &statement, 0);
+    sqlite3_bind_int(statement, 1, conversationID);
+    if (sqlite3_step(statement) == SQLITE_ROW)
+        message = strdup((const char*)sqlite3_column_text(statement, 0));
+    sqlite3_finalize(statement);
+    return message;
+}
+
+int isNameInConv(sqlite3 *db, int conversationID, const char *name) {
+    sqlite3_stmt *stmt;
+    const char *query = "SELECT * FROM Conversatii WHERE ConversationID = ? AND (SenderName = ? OR ReceiverName = ?)";
+    int rc = sqlite3_prepare_v2(db, query, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "Failed to prepare statement: %s\n", sqlite3_errmsg(db));
+        return 0;
+    }
+    sqlite3_bind_int(stmt, 1, conversationID);
+    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, name, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    if(rc==SQLITE_ROW){
+        sqlite3_finalize(stmt);
+        return 1;
+    } 
+    else if(rc == SQLITE_DONE){
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+    else{
+        fprintf(stderr, "Error executing query: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+}
+
+int getMaxConversationID(sqlite3* db) {
+    const char* sql = "SELECT MAX(ConversationID) FROM Conversatii;";
+    sqlite3_stmt* statement;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &statement, 0);
+    int maxID=-1;
+    if(sqlite3_step(statement)==SQLITE_ROW)
+        maxID=sqlite3_column_int(statement, 0);
+    sqlite3_finalize(statement);
+    return maxID;
+}
+
+int nameCallback(void *data, int argc, char **argv, char **colNames) {
+    if (argc > 0 && argv[0] != NULL) {
+        char **result = (char **)data;
+        *result = strdup(argv[0]);
+    }
+    return 0;
+}
+
+char *getNameForConversation(sqlite3 *db, int conversationID, const char *username) {
+    char query[256];
+    sprintf(query, "SELECT CASE WHEN SenderName = '%s' THEN ReceiverName ELSE SenderName END "
+                   "FROM Conversatii WHERE ConversationID = %d AND (SenderName = '%s' OR ReceiverName = '%s')",
+            username, conversationID, username, username);
+
+    char *result = NULL;
+
+    // Execute the query with the correct callback
+    int rc = sqlite3_exec(db, query, nameCallback, &result, NULL);
+
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "SQL error: %s\n", sqlite3_errmsg(db));
+        return NULL;
+    }
+
+    return result;
+}
+
 int main () {
+
+
     //TODO initializari pentru stocare informatiilor, BD si fisiere .txt
     sqlite3* db;
     char* errMsg=0;
@@ -448,6 +574,7 @@ int main () {
         exit(EXIT_FAILURE);
     }
     else printf("Baza de date a fost deschisa!\n");
+
 
     char *sql_create = "CREATE TABLE Blocked (Nume1 TEXT, Nume2 TEXT);";
     code = sqlite3_exec(db, sql_create, 0, 0, &errMsg);
@@ -466,7 +593,6 @@ int main () {
         printf("Nu mai cream tabelul Conversatii, acesta exista!\n");
     }
     else printf("Tabelul 'Conversatii' creat cu succes!\n");
-
 
     //? manual introducere si interogare istoric conversatii
     // insertConversation(db,"Nume1","Nume2","Mesaj");
@@ -510,10 +636,11 @@ int main () {
     nfds = sd;
     printf ("[server] Asteptam la portul %d...\n", PORT);
     fflush (stdout);     
-
+    int sel_code=0;
     while (1){
         readfds=actfds;
-        if (select (nfds+1, &readfds, NULL, NULL, &tv) < 0){
+        sel_code=select (nfds+1, &readfds, NULL, NULL, &tv);
+        if (sel_code < 0){
             perror ("[server] Eroare la select().\n");
             return errno;
         }
@@ -605,11 +732,71 @@ int main () {
                         }
                     }
                         
-                    else if(wants_operation(buf,"/reply ")){
+                    else if(wants_reply(buf)){
                         if(!userIsOnlineBySocket(i)){
                             send(i,mesaj_noPrivilege,strlen(mesaj_noPrivilege),0);
                             continue;
                         }
+                        else{
+                            char stringNr[256]="",msg_to_send[256]="";
+                            retrieve_data_fromReply(buf,stringNr,msg_to_send);
+                            if(!isInteger(stringNr)){
+                                send(i,"ID-ul conversatiei trebuie sa fie un numar intreg!\n",100,0);
+                                continue;
+                            }
+                            int id=atoi(stringNr);
+                            int max_id=getMaxConversationID(db);
+                            if(id>max_id){
+                                send(i,"Nu exista acest ID!\n",20,0);
+                                continue;
+                            }
+                            strcpy(toBeCreated,"");
+                            if(!isNameInConv(db,id,current_username)){
+                                printf("BA n are voie!\n");
+                                send(i,"Nu ati avut niciun mesaj cu acest ID!\n",100,0);
+                                continue;
+                            }
+                            const char* curr_msg = getMessageByID(db,id);
+                            if(curr_msg!=NULL){
+                                snprintf(toBeCreated,2048,"La mesajul: %s\nAti raspuns cu: %s\n",curr_msg,msg_to_send);
+                                free((void*)curr_msg);
+                            }
+                            char* user_to_send=getNameForConversation(db,id,current_username);
+                            int socket_to_send=getSocketByName(user_to_send);
+                            if(existaBlocare(db,user_to_send,current_username)){
+                                char temp[256]="";
+                                snprintf(temp,1024,"%s te-a blocat, deci nu ii poti trimite mesaje...\n",user_to_send);
+                                send(i,temp,strlen(temp),0);
+                                continue;
+                            }
+                            send(i,toBeCreated,strlen(toBeCreated),0);
+                            //TODO:
+                            //aici citesc mesajul cu care raspunde si il trimit omului caruia ii raspunde
+                            
+                            strcpy(toBeCreated,"");
+                            const char* curr_msg2 = getMessageByID(db,id);
+                            if(curr_msg!=NULL){
+                                snprintf(toBeCreated,2048,"La mesajul: %s (ID:%d)\n%s a raspuns cu: %s\n",curr_msg2,id,current_username,msg_to_send);
+                                free((void*)curr_msg2);
+                            }
+
+                            if(userIsOnlineBySocket(socket_to_send)){
+                                send(socket_to_send,toBeCreated,strlen(toBeCreated),0);
+                                insertConversation(db,current_username,user_to_send,msg_to_send);
+                                continue;
+                            }
+                            else{
+                                send(i,"User-ul nu este online. Ii vom trimite acest mesaj in unread\n",100,0);
+                                trimit_unread(i,user_to_send,toBeCreated);
+                                insertConversation(db,current_username,user_to_send,msg_to_send);                                
+                                continue;
+                            }
+
+                            
+                            free(user_to_send);
+
+                        }
+                        continue;
                         reply_flag=1;
                     }
                         
@@ -724,10 +911,10 @@ int main () {
                                         else{
                                             int socket_to_send=getSocketByName(username_to_send);
                                             char full_msg[1024]="";
-                                            snprintf(full_msg,2048,"[%s]: %s\n",current_username,msg_to_send);
+                                            insertConversation(db,current_username,username_to_send,msg_to_send);
+                                            snprintf(full_msg,2048,"\n[ID:%d, %s]: %s\n",getConversationID(db,current_username,username_to_send,msg_to_send),current_username,msg_to_send);
                                             send(socket_to_send,full_msg,strlen(full_msg),0);
                                             send(i,"Am trimis mesajul!\n",200,0);
-                                            insertConversation(db,current_username,username_to_send,msg_to_send);
                                         }
                                     }
                                 }
