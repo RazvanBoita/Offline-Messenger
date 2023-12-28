@@ -919,6 +919,12 @@ int main () {
                                     }
                                 }
                                 else{
+                                    if(existaBlocare(db,username_to_send,current_username)){
+                                            strcpy(toBeCreated,"");
+                                            snprintf(toBeCreated,1024,"%s te-a blocat, deci nu ii poti trimite mesaje!\n",username_to_send);
+                                            send(i,toBeCreated,strlen(toBeCreated),0);
+                                            continue;
+                                    }
                                     send(i,"User-ul nu este online, ii trimitem acest mesaj in unread\n",200,0);
                                     trimit_unread(i,username_to_send,msg_to_send);
                                     insertConversation(db,current_username,username_to_send,msg_to_send);
