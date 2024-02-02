@@ -9,7 +9,7 @@ Offline Messenger application made in C, that supports multiple clients connecte
   ->block/unblock<br />
   ->quit/disconnect/clear screen<br />
   
-Used technologies:
+Used technologies:<br />
   ->C language<br />
   ->TCP(I/O multiplexing with select() )<br />
   ->Sqlite3 for DATABASE (for storing messages, extra information about users)<br />
